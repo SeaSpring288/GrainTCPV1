@@ -391,7 +391,7 @@ Workers 版通过 Cloudflare Dashboard 在线配置环境变量。
 | `TG_GROUP_URL` | 交流群链接（登录页按钮） | `https://t.me/zyssadmin` |
 | `SITE_URL` | 网站链接（登录页按钮） | `https://blog.2026565.xyz/` |
 | `GITHUB_URL` | 项目地址（登录页按钮） | `https://github.com/xtgm/stallTCP1.32V2` |
-| `PROXY_CHECK_URL` | ProxyIP 检测站链接 | `https://kaic.hidns.co/` |
+| `PROXY_CHECK_URL` | ProxyIP 检测站链接 | `https://check.proxyip.cmliussss.net/` |
 
 #### 白名单配置
 
