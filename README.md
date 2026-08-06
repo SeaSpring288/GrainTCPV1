@@ -80,9 +80,9 @@ GrainTCPV1 是一个部署在 Cloudflare 上的代理节点管理系统，提供
 | 功能 | Workers | Snippets | 说明 |
 |------|:---:|:---:|------|
 | GrainTCP 代理内核 | ✅ | ✅ | 4 路并发竞速建连 + BYOB 零拷贝 + Early Data |
-| TURN/TCP 中继 | ✅ | ✅ | 支持匿名或用户名密码认证；Snippets 支持 A/AAAA 双解析与事务 ID 校验 |
-| TURN TXT 服务器池 | ❌ | ❌ | 当前代码不支持 `!txt` TURN 地址池 |
-| TURNS/TLS 中继 | ❌ | ✅ | Snippets 的控制连接和数据连接均建立 TLS；Worker 当前没有真实 TURNS TLS |
+| TURN/TCP 中继 | ✅ | ✅ | 两版均支持匿名或长期凭证认证、A/AAAA 目标解析、IPv4/IPv6 XOR 地址和事务 ID 校验 |
+| TURN TXT/多服务器池 | ❌ | ❌ | 两版均只支持单个服务器，不支持逗号多地址、竞速池或 `!txt` 地址池 |
+| TURNS/TLS 中继 | ✅ | ✅ | 两版控制连接和数据连接均使用 TLS；Worker 还支持域名原生 TLS 与兼容 TLS 回退 |
 | SOCKS5 代理 | ✅ | ✅ | 全局/局部模式，支持用户名密码认证 |
 | HTTP CONNECT 代理 | ✅ | ✅ | 全局/局部模式，支持 Basic Auth |
 | HTTPS CONNECT 代理 | ❌ | ✅ | Snippets 通过真实 TLS 连接 HTTPS 代理服务器 |
@@ -106,10 +106,10 @@ GrainTCPV1 是一个部署在 Cloudflare 上的代理节点管理系统，提供
 
 | 文件 | 大小 | 用途 |
 |------|------|------|
-| `worker.js` | ~284 KB | Workers/Pages 完整版（可读源码，支持环境变量 + D1） |
+| `worker.js` | ~307 KB | Workers/Pages 完整版（可读源码，支持环境变量 + D1） |
 | `snippets.js` | ~32 KB | Snippets 精简版（压缩代码，配置写在顶部） |
 
-两份文件共同支持 TURN/TCP、SOCKS5、HTTP、ProxyIP、ECH、订阅和后台；当前 Snippets 额外实现真实 HTTPS CONNECT 与 TURNS/TLS。两版均不支持 TURN `!txt` 地址池，Worker 当前也没有真实 TURNS TLS。
+两份文件共同支持 TURN/TCP、TURNS/TLS、SOCKS5、HTTP、ProxyIP、ECH、订阅和后台。Worker 的 TURN/TURNS 支持全局代理、直连失败回落、查询参数、Base64/UTF-8 凭证、DNS 缓存、438 Nonce 更新与 Allocation Refresh；Snippets 的 TURN/TURNS 仅支持全局 `://` 路径，但额外实现了真实 HTTPS CONNECT。两版均不支持 TURN 多服务器池或 `!txt` 地址池。
 
 ---
 
@@ -459,7 +459,17 @@ TLS: 开启
 路径: /
 ```
 
-> 以下代理路径说明以当前 Snippets 版 `snippets.js` 的实际解析和连接逻辑为准。v2rayN 的 `Path` 输入框填写原始路径；导出成 VLESS 链接后出现的 `%2F`、`%3A`、`%40` 等内容属于正常 URL 编码。
+> 以下代理路径会分别标注 Worker 与 Snippets 的实际能力，不能把某一版专属写法直接套用到另一版。v2rayN 的 `Path` 输入框填写原始路径；导出成 VLESS 链接后出现的 `%2F`、`%3A`、`%40` 等内容属于正常 URL 编码。
+
+#### 路径能力速查
+
+| 类型 | Worker | Snippets | 说明 |
+|------|--------|----------|------|
+| ProxyIP | 全局回落路径、查询参数 | 全局回落路径、查询参数 | 默认端口 443，必须是兼容本项目的专用 ProxyIP |
+| SOCKS5 | 全局、局部、`?s5=` | 全局、局部、`?s5=` | 默认端口 1080；GrainTCP Worker 的域名/压缩 IPv6 目标存在旧编码限制 |
+| HTTP CONNECT | 全局、局部 | 全局、局部 | Worker 应显式填写端口；Snippets 省略端口默认 80 |
+| HTTPS CONNECT | 不支持真实 TLS | 全局、局部 | Snippets 省略端口默认 443 |
+| TURN/TURNS | 全局、回落、查询参数 | 仅全局 | 默认端口 3478/5349；均只支持单个服务器 |
 
 ### 使用 ProxyIP 中转
 
@@ -506,7 +516,9 @@ direct → proxy
 
 ### 使用 SOCKS5 代理
 
-通过外部 SOCKS5 代理服务器转发流量。支持域名、IPv4、方括号 IPv6、无认证、用户名密码认证以及 Base64 凭证，省略端口时默认使用 `1080`。
+通过外部 SOCKS5 代理服务器转发流量。两版均支持全局、局部和 `?s5=` 查询写法，代理服务器端口省略时默认使用 `1080`。Snippets 支持域名、IPv4、压缩 IPv6 目标、UTF-8 与 Base64 凭证；Worker 支持无认证、ASCII 用户名密码和 Base64 凭证。
+
+> GrainTCP Worker 当前对 IPv4 目标最稳定；域名目标与压缩 IPv6 目标仍受旧 SOCKS5 地址类型编码限制。需要通过 SOCKS5 访问 CDN/域名或完整 IPv6 时优先使用 Snippets。代理服务器地址本身仍可填写域名、IPv4 或方括号 IPv6。
 
 **全局 SOCKS5（整个连接走 SOCKS5）**：
 
@@ -608,44 +620,86 @@ direct → HTTP CONNECT
 direct → HTTPS CONNECT
 ```
 
-HTTP/HTTPS 支持 Basic Auth、UTF-8 用户名密码以及 Base64 凭证。当前不支持 `/?http=...` 或 `/?https=...` 查询参数；局部代理请使用 `/http=...` 或 `/https=...`。
+两版 HTTP CONNECT 均支持 Basic Auth 和 Base64 凭证；Snippets 额外支持 UTF-8 凭证及真实 HTTPS CONNECT。Worker 当前只提供明文 HTTP CONNECT，必须填写实际代理端口，不要把 `/https://` 当作 Worker 的 TLS 代理写法。两版均不支持 `/?http=...` 或 `/?https=...` 查询参数；`/https=...` 仅适用于 Snippets。
 
 ### 使用 TURN/TURNS 中继
 
-TURN 适用于需要通过 TURN/TCP 中继目标连接的网络环境。当前 Snippets 支持普通 TURN 和真实 TURNS；两种方式匹配后都属于全局代理，不执行 Direct、SOCKS5/HTTP 或 ProxyIP 回落。
+TURN/TURNS 通过 RFC 6062 TCP 中继目标连接。TURN 的控制与数据连接使用普通 TCP；TURNS 的控制与数据连接都使用 TLS。两版均只接受一个服务器地址，不支持逗号多地址、竞速池、`!txt` 地址池、`gturn/turnall` 等批量写法，也不依赖 `?ed=2560`。
 
-| 协议 | v2rayN Path | 默认端口 | 连接方式 |
-|------|-------------|:---:|----------|
-| TURN | `/turn://用户名:密码@TURN服务器地址:3478` | 3478 | 控制和数据连接使用普通 TCP |
-| TURNS | `/turns://用户名:密码@TURN服务器地址:5349` | 5349 | 控制和数据连接都使用 TLS |
+#### Worker 与 Snippets 能力区别
 
-不需要认证时可以省略用户名和密码：
+| 版本 | 全局代理 | 直连失败回落 | 查询参数 | 凭证 | 默认端口 |
+|------|----------|--------------|----------|------|:---:|
+| Worker | `/turn://...`、`/turns://...` | `/turn=...`、`/turns=...`，也接受 `/turn=turn://...`、`/turns=turns://...` | `/?turn=...`、`/?turns=...`；追加 `&global=1` 或 `&globalproxy=1` 可改为全局 | 无认证、明文、URL 编码、Base64、UTF-8 | 3478 / 5349 |
+| Snippets | `/turn://...`、`/turns://...` | 不支持 | 不支持 | 无认证、明文或 URL 编码，不支持 TURN 凭证 Base64 | 3478 / 5349 |
 
-```text
-/turn://TURN服务器地址:3478
-/turns://TURN服务器地址:5349
-```
+`://` 表示整个连接直接走 TURN/TURNS，不再尝试 Direct、SOCKS5/HTTP 或 ProxyIP；Worker 的 `=` 与默认查询参数表示 `direct → turn`，只有直连失败后才使用中继。
 
-支持域名、IPv4 和方括号 IPv6：
+#### Worker 全局代理写法
 
 ```text
-/turn://admin:password@relay.example.com:3478
-/turn://admin:password@18.252.251.20:3478
-/turns://admin:password@[2001:db8::1]:5349
+/turn://用户名:密码@turn.example.com:3478
+/turns://用户名:密码@turn.example.com:5349
+/turn://18.252.251.20:3478
+/turns://[2001:db8::1]:5349
 ```
 
-对于域名目标，Snippets 会按 A、AAAA 顺序查询，并在 Cloudflare DNS 与 Google DNS 之间回退；支持 IPv4/IPv6 XOR 地址、顺序事务和事务 ID 校验。
-
-当前 TURN/TURNS 认证格式是明文的 `用户名:密码@地址:端口`，不支持 TURN 凭证 Base64。以下旧写法当前均不支持：
+#### Worker 直连失败回落写法
 
 ```text
-/turn=用户名:密码@TURN服务器地址:3478
-/turns=用户名:密码@TURN服务器地址:5349
-/gturn=用户名:密码@TURN服务器地址:3478
-/?turn=用户名:密码@TURN服务器地址:3478
-/?proxyip=turn://用户名:密码@TURN服务器地址:3478
-/turn=pool.example.com!txt
+/turn=用户名:密码@turn.example.com:3478
+/turn=turn://用户名:密码@turn.example.com:3478
+/turns=用户名:密码@turn.example.com:5349
+/turns=turns://用户名:密码@turn.example.com:5349
 ```
+
+#### Worker 查询参数写法
+
+```text
+/?turn=用户名:密码@turn.example.com:3478
+/?turns=用户名:密码@turn.example.com:5349
+/?turn=用户名:密码@turn.example.com:3478&global=1
+/?turns=用户名:密码@turn.example.com:5349&globalproxy=1
+```
+
+#### Snippets 写法
+
+```text
+/turn://用户名:密码@turn.example.com:3478
+/turns://用户名:密码@turn.example.com:5349
+```
+
+Snippets 的 `/turn=...`、`/turns=...`、`/?turn=...` 和 `/?turns=...` 不会启用 TURN/TURNS；需要回落或查询参数时请部署 Worker 版。
+
+#### 认证和地址格式
+
+不需要认证时可以直接填写服务器；两版均接受域名、IPv4 和方括号 IPv6：
+
+```text
+/turn://turn.example.com
+/turn://18.252.251.20:3478
+/turns://[2001:db8::1]:5349
+```
+
+Worker 还可以把 `用户名:密码` 单独进行 Base64 编码：
+
+```text
+/turn://YWRtaW46cGFzczEyMw==@turn.example.com:3478
+/turns=YWRtaW46cGFzczEyMw==@turn.example.com:5349
+```
+
+用户名或密码包含中文、`@`、`:` 等特殊字符时应进行 URL 编码。Snippets 不识别 TURN 凭证 Base64，只能使用明文或 URL 编码后的 `用户名:密码@地址`。
+
+#### 解析、认证和 TLS 机制
+
+- Worker：目标域名依次使用 AliDNS、Cloudflare DNS、Google DNS 查询 A/AAAA；成功结果缓存 180 秒，空结果缓存 30 秒，最多 400 条，并合并同域名并发查询。
+- Snippets：目标域名查询 A/AAAA，并在 Cloudflare DNS 与 Google DNS 之间回退，不使用 Worker 的 DNS 缓存层。
+- 两版：支持 IPv4/IPv6 XOR-PEER-ADDRESS、Allocate、CreatePermission、Connect、ConnectionBind、401 长期凭证认证和全部事务 ID 校验。
+- Worker：额外处理 438 Stale Nonce、严格顺序事务、Allocation Refresh、分段/粘包响应、连接超时及失败连接清理。
+- Worker TURNS：域名优先使用 Cloudflare 原生 TLS；原生 TLS 失败或服务器为 IP 时使用自定义 TLS 兼容层，控制连接与数据连接都会加密。
+- Snippets TURNS：控制连接与数据连接均使用 Cloudflare 原生 TLS。
+
+> Worker 的自定义 TLS 兼容层用于提升 IP 与特殊 TURNS 服务兼容性，但不执行完整证书链和主机名验证。敏感场景应优先使用可信域名，让连接走 Cloudflare 原生 TLS。
 
 在 v2rayN 的 `Path` 输入框中应填写原始路径：
 
@@ -663,71 +717,66 @@ path=%2Fturn%3A%2F%2Fadmin%3Apassword%40relay.example.com%3A3478
 
 ### 连接回落顺序
 
-当使用局部代理模式时，系统按顺序尝试连接，前一种失败后自动尝试下一种：
+全局 `://` 路径只走指定代理。没有命中全局代理时，两版默认都从 Direct 开始；Snippets 的普通顺序为 `direct → s5 → proxy`，其中 `s5` 可承载 SOCKS5、HTTP 或 HTTPS CONNECT。Worker 的 `s5` 只承载 SOCKS5/HTTP，并额外支持 TURN/TURNS 回落。
 
-**默认顺序**：`direct → s5 → proxy`
+| 方式 | Worker | Snippets |
+|------|--------|----------|
+| `direct` | GrainTCP 竞速直连（默认 4 路并发） | GrainTCP Snippets 直连 |
+| `s5` | SOCKS5 或 HTTP CONNECT | SOCKS5、HTTP 或 HTTPS CONNECT |
+| `turn` | TURN/TURNS 中继 | 不支持查询参数回落 |
+| `proxy` | ProxyIP 中转 | ProxyIP 中转 |
 
-| 方式 | 说明 |
-|------|------|
-| `direct` | GrainTCP 竞速直连（默认 4 路并发） |
-| `s5` | 内部局部代理槽位，通过 SOCKS5、HTTP 或 HTTPS CONNECT 连接 |
-| `proxy` | 通过 ProxyIP 中转连接 |
-
-**自定义回落顺序**：
-
-`mode` 只控制连接顺序，不会自动生成 SOCKS5/HTTP 或 ProxyIP 地址，因此必须同时提供实际地址。
-
-只使用 SOCKS5：
+Worker 使用 `/turn=...` 或 `/turns=...` 时固定执行：
 
 ```text
-/?s5=admin:pass123@proxy.example.com:1080&mode=s5
+direct → TURN/TURNS
 ```
 
-直连失败后使用 ProxyIP：
-
-```text
-/?proxyip=proxyip.example.com:443&mode=proxy
-```
-
-按照参数顺序执行 `direct → SOCKS5 → ProxyIP`：
+Worker 与 Snippets 均可通过查询参数顺序调整自身支持的回落步骤。例如：
 
 ```text
 /?direct&s5=admin:pass123@proxy.example.com:1080&proxyip=proxyip.example.com:443
+/?direct&proxyip=proxyip.example.com:443&s5=admin:pass123@proxy.example.com:1080
 ```
 
-交换查询参数顺序也会交换回落顺序，例如：
+分别对应：
 
 ```text
-/?direct&proxyip=proxyip.example.com:443&s5=admin:pass123@proxy.example.com:1080
+direct → SOCKS5 → ProxyIP
+direct → ProxyIP → SOCKS5
+```
+
+Worker 还可以把 TURN/TURNS 插入顺序：
+
+```text
+/?direct&s5=admin:pass123@proxy.example.com:1080&turn=user:pass@turn.example.com:3478&proxyip=proxyip.example.com:443
 ```
 
 对应：
 
 ```text
-direct → ProxyIP → SOCKS5
+direct → SOCKS5 → TURN → ProxyIP
 ```
 
-`/?mode=proxy`、`/?mode=s5` 和 `/?direct&s5&proxyip` 如果不携带代理地址，只能表达顺序，不能建立对应的代理连接。
+Snippets 会忽略 `turn`/`turns` 查询回落项；其 TURN/TURNS 只能使用全局 `://` 路径。`mode` 只控制顺序，不会自动生成代理地址，必须同时提供对应的 `s5`、`turn` 或 `proxyip` 实际值。
 
 ### 代理凭证 Base64 编码
 
-SOCKS5、HTTP 和 HTTPS 代理的用户名密码支持 Base64 编码传递。只编码 `用户名:密码`，代理地址不参与编码：
-
-```text
-/s5=base64编码的凭证@代理地址:端口
-/http=base64编码的凭证@代理地址:端口
-/https=base64编码的凭证@代理地址:端口
-```
-
-例如用户名 `admin`、密码 `pass123`，Base64 编码 `admin:pass123` 得到 `YWRtaW46cGFzczEyMw==`：
+两版 SOCKS5、HTTP，以及 Worker TURN/TURNS 都可以只对 `用户名:密码` 做 Base64 编码，代理服务器地址不参与编码：
 
 ```text
 /s5=YWRtaW46cGFzczEyMw==@proxy.example.com:1080
 /http=YWRtaW46cGFzczEyMw==@proxy.example.com:8080
+/turn=YWRtaW46cGFzczEyMw==@turn.example.com:3478
+```
+
+Snippets 的真实 HTTPS CONNECT 也支持：
+
+```text
 /https=YWRtaW46cGFzczEyMw==@proxy.example.com:443
 ```
 
-用户名或密码包含中文及其他特殊字符时，应进行 URL 编码。TURN/TURNS 当前不使用这套 Base64 凭证格式。
+Snippets TURN/TURNS 不识别 Base64 凭证。用户名或密码包含中文、`@`、`:` 等特殊字符时应进行 URL 编码；Worker 的旧 SOCKS5/HTTP 认证建议使用 ASCII，Worker TURN/TURNS 与 Snippets SOCKS5/HTTP/HTTPS 支持 UTF-8。
 
 ---
 
@@ -822,7 +871,7 @@ https://你的域名/订阅密码?target=loon
 3. 将你的 GrainTCPV1 节点信息粘贴到 WorkerVless2sub 前端页面
 4. 生成的订阅链接格式为：
 ```
-https://sub.example.com/sub?uuid=UUID&sni=域名&host=域名&fp=firefox&alpn=h3&ech=...&type=ws&path=/proxyip%3D中转IP
+https://sub.example.com/sub?uuid=UUID&sni=域名&host=域名&fp=chrome&alpn=h3&ech=...&type=ws&path=/proxyip%3D中转IP
 ```
 5. 将该链接添加到客户端
 
@@ -1045,7 +1094,7 @@ ECH 开启后，系统自动对订阅内容做以下处理：
 | Early Data | 首个数据包通过 sec-websocket-protocol 头传递，省 1 个 RTT |
 | 半开连接 | allowHalfOpen: true，一方关闭写入后另一方仍可读 |
 | 无 import 语句 | 避免 Cloudflare Snippets 环境的代码检测问题 |
-| TURN TCP 中继（Snippets） | 支持 Allocate/CreatePermission/Connect/ConnectionBind、401 长期凭证认证、MESSAGE-INTEGRITY、IPv4/IPv6 XOR 地址和事务 ID 校验 |
+| TURN/TURNS TCP 中继（Workers 与 Snippets） | 两版支持 Allocate/CreatePermission/Connect/ConnectionBind、401 长期凭证认证、MESSAGE-INTEGRITY、IPv4/IPv6 XOR 地址和事务 ID 校验；Worker 另有 438 重试、刷新、DNS 缓存与 TLS 兼容回退 |
 
 ---
 
@@ -1151,25 +1200,28 @@ ECH 开启后，系统自动对订阅内容做以下处理：
 
 ### TURN 相关
 
-**Q: TURN 怎么用？**
+**Q: TURN/TURNS 怎么用？**
 
-在客户端 WebSocket 路径中填写：
-```
-/turn://用户名:密码@TURN服务器IP:端口
-```
+- Worker 全局代理：`/turn://用户:密码@地址:3478` 或 `/turns://用户:密码@地址:5349`。
+- Worker 直连失败回落：`/turn=用户:密码@地址:3478` 或 `/turns=用户:密码@地址:5349`。
+- Worker 查询参数：`/?turn=...`、`/?turns=...`，追加 `&global=1` 可强制全局。
+- Snippets：只使用 `/turn://...` 或 `/turns://...` 全局路径。
 
 **Q: 什么时候用 TURN？**
 
-- 直连不通 + ProxyIP 不通时
-- 某些企业网络/校园网环境
-- TURN 本质是通过第三方服务器做 TCP 中继
+- 直连、ProxyIP 或常规代理出口不可用时。
+- 企业网、校园网或其他需要 TCP 中继的环境。
+- TURN 本质是通过第三方服务器中继目标 TCP 连接。
 
 **Q: TURN 和 TURNS 区别？**
 
-- TURN：两版均支持，使用普通 TCP 连接，常用端口为 3478
-- TURNS：在 TURN 控制连接和数据连接外建立 TLS，常用端口为 5349
-- 当前 Snippets 已实现真实 TURNS，省略端口时默认使用 5349
-- Worker 当前只有普通 TURN/TCP；其 `turns://` 路径不会建立真实 TLS，不应按 TURNS 使用
+- TURN：控制连接和数据连接使用普通 TCP，默认端口 3478。
+- TURNS：控制连接和数据连接都使用 TLS，默认端口 5349。
+- Worker 与 Snippets 都实现真实 TURNS；Worker 额外提供原生 TLS 失败时的兼容 TLS 回退。
+
+**Q: 是否必须添加 `?ed=2560`？**
+
+不需要。两版 TURN/TURNS 都不依赖 Early Data 参数；在 v2rayN Path 中直接填写文档列出的原始路径即可。
 
 **Q: 哪里获取 TURN 服务器？**
 
