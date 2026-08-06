@@ -68,7 +68,7 @@ GrainTCPV1 是一个部署在 Cloudflare 上的代理节点管理系统，提供
 - 自适应订阅分发（自动识别客户端返回对应格式）
 - ECH 加密注入（提升连接隐蔽性）
 - 可视化后台管理面板
-- 多种代理出口方式（Direct / SOCKS5 / HTTP / ProxyIP / TURN）
+- 多种代理出口方式（Direct / SOCKS5 / HTTP/HTTPS / ProxyIP / TURN/TURNS）
 - CF 用量实时监控（Telegram 仪表盘 + `/stats` 命令，含 Zone 流量与威胁统计）
 
 支持两种部署方式：**Workers**（完整版）和 **Snippets**（精简版）。
@@ -80,9 +80,12 @@ GrainTCPV1 是一个部署在 Cloudflare 上的代理节点管理系统，提供
 | 功能 | Workers | Snippets | 说明 |
 |------|:---:|:---:|------|
 | GrainTCP 代理内核 | ✅ | ✅ | 4 路并发竞速建连 + BYOB 零拷贝 + Early Data |
-| TURN/TURNS 中继 | ✅ | ✅ | TCP 中继连接，支持认证和匿名 |
+| TURN/TCP 中继 | ✅ | ✅ | 支持匿名或用户名密码认证；Snippets 支持 A/AAAA 双解析与事务 ID 校验 |
+| TURN TXT 服务器池 | ❌ | ❌ | 当前代码不支持 `!txt` TURN 地址池 |
+| TURNS/TLS 中继 | ❌ | ✅ | Snippets 的控制连接和数据连接均建立 TLS；Worker 当前没有真实 TURNS TLS |
 | SOCKS5 代理 | ✅ | ✅ | 全局/局部模式，支持用户名密码认证 |
 | HTTP CONNECT 代理 | ✅ | ✅ | 全局/局部模式，支持 Basic Auth |
+| HTTPS CONNECT 代理 | ❌ | ✅ | Snippets 通过真实 TLS 连接 HTTPS 代理服务器 |
 | ProxyIP 中转 | ✅ | ✅ | 指定优选 IP 作为出口中转 |
 | 自适应订阅 | ✅ | ✅ | 根据客户端 UA 自动返回对应格式 |
 | ECH 加密 | ✅ | ✅ | DoH 查询自动注入 ECH Config |
@@ -103,10 +106,10 @@ GrainTCPV1 是一个部署在 Cloudflare 上的代理节点管理系统，提供
 
 | 文件 | 大小 | 用途 |
 |------|------|------|
-| `worker.js` | ~247 KB | Workers/Pages 完整版（可读源码，支持环境变量 + D1） |
+| `worker.js` | ~284 KB | Workers/Pages 完整版（可读源码，支持环境变量 + D1） |
 | `snippets.js` | ~32 KB | Snippets 精简版（压缩代码，配置写在顶部） |
 
-两份文件核心功能完全一致（TURN + SOCKS5 + HTTP + ProxyIP + ECH + 订阅 + 后台），仅部署方式和扩展功能不同。
+两份文件共同支持 TURN/TCP、SOCKS5、HTTP、ProxyIP、ECH、订阅和后台；当前 Snippets 额外实现真实 HTTPS CONNECT 与 TURNS/TLS。两版均不支持 TURN `!txt` 地址池，Worker 当前也没有真实 TURNS TLS。
 
 ---
 
@@ -444,123 +447,219 @@ let SUBAPI="https://订阅转换API",SUBINI="订阅转换配置URL";
 
 ### 基本使用（直连模式）
 
-客户端直接连接你的域名即可，流量直接从 Cloudflare 出去到目标服务器：
+客户端直接连接你的域名即可，流量直接从 Cloudflare 出口到目标服务器：
 
-```
+```text
 协议: VLESS
 地址: 你的域名
 端口: 443
-UUID: 你配置的UUID
+UUID: 你配置的 UUID
 传输: WebSocket
 TLS: 开启
 路径: /
 ```
 
+> 以下代理路径说明以当前 Snippets 版 `snippets.js` 的实际解析和连接逻辑为准。v2rayN 的 `Path` 输入框填写原始路径；导出成 VLESS 链接后出现的 `%2F`、`%3A`、`%40` 等内容属于正常 URL 编码。
+
 ### 使用 ProxyIP 中转
 
-当直连某些网站不通时，通过 ProxyIP 作为出口中转。有三种配置方式：
+当直连目标失败时，可以通过 ProxyIP 作为回落出口。ProxyIP 不是 SOCKS5 或 HTTP 代理，必须填写兼容本项目转发方式的 ProxyIP 地址。
 
 **方式一：在配置中设置默认 ProxyIP**
+
 - Workers 版：环境变量 `PROXYIP` 填入地址
-- Snippets 版：修改顶部 `PIP` 的值
+- Snippets 版：修改顶部 `PIP` 的值；生成订阅时会把它写入 `/proxyip=...` 路径
 
 **方式二：在客户端路径中指定**
-```
-路径: /proxyip=1.2.3.4:443
+
+```text
+/proxyip=1.2.3.4:443
+/proxyip/proxy.example.com:443
+/ip=proxy.example.com:443
+/ip/proxy.example.com:443
 ```
 
 **方式三：查询参数方式**
-```
-路径: /?proxyip=1.2.3.4:443
+
+```text
+/?proxyip=1.2.3.4:443
 ```
 
-> ProxyIP 地址格式为 `IP:端口` 或 `域名:端口`，端口默认 443 可省略。
+ProxyIP 支持域名、IPv4 和方括号 IPv6，端口默认 `443`，可以省略：
+
+```text
+/proxyip=proxy.example.com
+/proxyip=[2001:db8::1]:443
+```
+
+ProxyIP 的连接顺序为：
+
+```text
+direct → proxy
+```
+
+`mode=proxy` 只指定顺序，并不会生成 ProxyIP 地址；完整写法是：
+
+```text
+/?proxyip=proxy.example.com:443&mode=proxy
+```
 
 ### 使用 SOCKS5 代理
 
-通过外部 SOCKS5 代理服务器转发流量。
+通过外部 SOCKS5 代理服务器转发流量。支持域名、IPv4、方括号 IPv6、无认证、用户名密码认证以及 Base64 凭证，省略端口时默认使用 `1080`。
 
 **全局 SOCKS5（整个连接走 SOCKS5）**：
 
-在客户端 WebSocket 路径中填写：
-```
+```text
 /socks5://用户名:密码@代理服务器地址:端口
+/socks5://代理服务器地址:端口
 ```
 
 示例：
-```
+
+```text
 /socks5://admin:pass123@proxy.example.com:1080
+/socks5://proxy.example.com:1080
+/socks5://admin:pass123@[2001:db8::1]:1080
 ```
 
-如果 SOCKS5 不需要认证：
-```
-/socks5://proxy.example.com:1080
+`/socks://...` 是兼容别名，连接协议仍然是 SOCKS5，并非 SOCKS4：
+
+```text
+/socks://admin:pass123@proxy.example.com:1080
 ```
 
 **局部 SOCKS5（作为回落选项）**：
 
-```
+```text
 /s5=用户名:密码@代理服务器地址:端口
+/socks5=用户名:密码@代理服务器地址:端口
+/socks=用户名:密码@代理服务器地址:端口
 ```
 
 或通过查询参数：
-```
+
+```text
 /?s5=admin:pass123@proxy.example.com:1080
 ```
 
-> 局部模式下，系统先尝试直连，直连失败后再走 SOCKS5。
+局部模式的连接顺序为：
 
-### 使用 HTTP CONNECT 代理
+```text
+direct → s5
+```
 
-通过外部 HTTP 代理服务器转发流量。
+如果需要强制只走 SOCKS5，必须同时提供地址：
+
+```text
+/?s5=admin:pass123@proxy.example.com:1080&mode=s5
+```
+
+注意：`/s5://...` 和 `/?socks5=...` 不属于当前支持的标准写法。
+
+### 使用 HTTP/HTTPS CONNECT 代理
+
+通过外部 HTTP 或 HTTPS CONNECT 代理服务器转发流量。HTTP 默认端口为 `80`；HTTPS 默认端口为 `443`。
 
 **全局 HTTP 代理（整个连接走 HTTP CONNECT）**：
 
-```
+```text
 /http://用户名:密码@代理服务器地址:端口
+/http://代理服务器地址:端口
 ```
 
 示例：
-```
-/http://admin:pass123@proxy.example.com:8080
-```
 
-不需要认证时：
-```
+```text
+/http://admin:pass123@proxy.example.com:8080
 /http://proxy.example.com:8080
 ```
 
 **局部 HTTP 代理（作为回落选项）**：
 
-```
+```text
 /http=用户名:密码@代理服务器地址:端口
+/http=代理服务器地址:端口
 ```
+
+局部 HTTP 的连接顺序为：
+
+```text
+direct → HTTP CONNECT
+```
+
+**Snippets 全局 HTTPS 代理（与代理服务器建立真实 TLS）**：
+
+```text
+/https://用户名:密码@代理服务器地址:443
+/https://代理服务器地址:443
+```
+
+**Snippets 局部 HTTPS 代理**：
+
+```text
+/https=用户名:密码@代理服务器地址:443
+/https=代理服务器地址:443
+```
+
+局部 HTTPS 的连接顺序为：
+
+```text
+direct → HTTPS CONNECT
+```
+
+HTTP/HTTPS 支持 Basic Auth、UTF-8 用户名密码以及 Base64 凭证。当前不支持 `/?http=...` 或 `/?https=...` 查询参数；局部代理请使用 `/http=...` 或 `/https=...`。
 
 ### 使用 TURN/TURNS 中继
 
-TURN 是一种 TCP 中继协议，适用于直连和 ProxyIP 都不通的特殊网络环境。
+TURN 适用于需要通过 TURN/TCP 中继目标连接的网络环境。当前 Snippets 支持普通 TURN 和真实 TURNS；两种方式匹配后都属于全局代理，不执行 Direct、SOCKS5/HTTP 或 ProxyIP 回落。
 
-**TURN（未加密）**：
-```
-/turn://用户名:密码@TURN服务器地址:3478
-```
+| 协议 | v2rayN Path | 默认端口 | 连接方式 |
+|------|-------------|:---:|----------|
+| TURN | `/turn://用户名:密码@TURN服务器地址:3478` | 3478 | 控制和数据连接使用普通 TCP |
+| TURNS | `/turns://用户名:密码@TURN服务器地址:5349` | 5349 | 控制和数据连接都使用 TLS |
 
-**TURNS（TLS 加密）**：
-```
-/turns://用户名:密码@TURN服务器地址:5349
-```
+不需要认证时可以省略用户名和密码：
 
-不需要认证时：
-```
+```text
 /turn://TURN服务器地址:3478
+/turns://TURN服务器地址:5349
 ```
 
-支持域名：
+支持域名、IPv4 和方括号 IPv6：
+
+```text
+/turn://admin:password@relay.example.com:3478
+/turn://admin:password@18.252.251.20:3478
+/turns://admin:password@[2001:db8::1]:5349
 ```
+
+对于域名目标，Snippets 会按 A、AAAA 顺序查询，并在 Cloudflare DNS 与 Google DNS 之间回退；支持 IPv4/IPv6 XOR 地址、顺序事务和事务 ID 校验。
+
+当前 TURN/TURNS 认证格式是明文的 `用户名:密码@地址:端口`，不支持 TURN 凭证 Base64。以下旧写法当前均不支持：
+
+```text
+/turn=用户名:密码@TURN服务器地址:3478
+/turns=用户名:密码@TURN服务器地址:5349
+/gturn=用户名:密码@TURN服务器地址:3478
+/?turn=用户名:密码@TURN服务器地址:3478
+/?proxyip=turn://用户名:密码@TURN服务器地址:3478
+/turn=pool.example.com!txt
+```
+
+在 v2rayN 的 `Path` 输入框中应填写原始路径：
+
+```text
 /turn://admin:password@relay.example.com:3478
 ```
 
-> TURN 模式下不走回落，直接全部流量通过 TURN 服务器中继。
+导出成 VLESS 链接后，客户端会自动编码为类似下面的形式：
+
+```text
+path=%2Fturn%3A%2F%2Fadmin%3Apassword%40relay.example.com%3A3478
+```
+
+`%3A%2F%2F` 是 VLESS URL 中的正常编码表现，不需要在 v2rayN 的 Path 输入框中手动填写。
 
 ### 连接回落顺序
 
@@ -571,30 +670,64 @@ TURN 是一种 TCP 中继协议，适用于直连和 ProxyIP 都不通的特殊�
 | 方式 | 说明 |
 |------|------|
 | `direct` | GrainTCP 竞速直连（默认 4 路并发） |
-| `s5` | 通过 SOCKS5 或 HTTP CONNECT 代理连接 |
+| `s5` | 内部局部代理槽位，通过 SOCKS5、HTTP 或 HTTPS CONNECT 连接 |
 | `proxy` | 通过 ProxyIP 中转连接 |
 
 **自定义回落顺序**：
 
-通过查询参数指定：
+`mode` 只控制连接顺序，不会自动生成 SOCKS5/HTTP 或 ProxyIP 地址，因此必须同时提供实际地址。
+
+只使用 SOCKS5：
+
+```text
+/?s5=admin:pass123@proxy.example.com:1080&mode=s5
 ```
-/?mode=proxy           → 只走 direct + proxy
-/?mode=s5              → 只走 s5
-/?direct&s5&proxyip    → 按参数顺序回落
+
+直连失败后使用 ProxyIP：
+
+```text
+/?proxyip=proxyip.example.com:443&mode=proxy
 ```
+
+按照参数顺序执行 `direct → SOCKS5 → ProxyIP`：
+
+```text
+/?direct&s5=admin:pass123@proxy.example.com:1080&proxyip=proxyip.example.com:443
+```
+
+交换查询参数顺序也会交换回落顺序，例如：
+
+```text
+/?direct&proxyip=proxyip.example.com:443&s5=admin:pass123@proxy.example.com:1080
+```
+
+对应：
+
+```text
+direct → ProxyIP → SOCKS5
+```
+
+`/?mode=proxy`、`/?mode=s5` 和 `/?direct&s5&proxyip` 如果不携带代理地址，只能表达顺序，不能建立对应的代理连接。
 
 ### 代理凭证 Base64 编码
 
-SOCKS5 和 HTTP 代理的用户名密码支持 Base64 编码传递：
+SOCKS5、HTTP 和 HTTPS 代理的用户名密码支持 Base64 编码传递。只编码 `用户名:密码`，代理地址不参与编码：
 
-```
+```text
 /s5=base64编码的凭证@代理地址:端口
+/http=base64编码的凭证@代理地址:端口
+/https=base64编码的凭证@代理地址:端口
 ```
 
 例如用户名 `admin`、密码 `pass123`，Base64 编码 `admin:pass123` 得到 `YWRtaW46cGFzczEyMw==`：
-```
+
+```text
 /s5=YWRtaW46cGFzczEyMw==@proxy.example.com:1080
+/http=YWRtaW46cGFzczEyMw==@proxy.example.com:8080
+/https=YWRtaW46cGFzczEyMw==@proxy.example.com:443
 ```
+
+用户名或密码包含中文及其他特殊字符时，应进行 URL 编码。TURN/TURNS 当前不使用这套 Base64 凭证格式。
 
 ---
 
@@ -731,10 +864,10 @@ ECH 开启后，系统自动对订阅内容做以下处理：
 
 ### ECH 开启后的自动变化
 
-1. **指纹（Fingerprint）**：自动切换为 `firefox`（关闭时为 `randomized`）
+1. **指纹（Fingerprint）**：ECH 开启和关闭时均使用 `chrome`
 2. **Clash 订阅**：自动添加 DNS nameserver-policy 段 + 节点 ech-opts 配置
 3. **Sing-box 订阅**：自动添加 `tls.ech` 字段和 `utls` 指纹配置
-4. **Base64 订阅**：每个节点 URI 自动追加 `&ech=` 和 `&fp=firefox` 参数
+4. **Base64 订阅**：ECH 开启时为节点 URI 自动追加 `&ech=`，并统一使用 `fp=chrome`
 
 ### 更换 ECH 的 DoH 服务器
 
@@ -912,7 +1045,7 @@ ECH 开启后，系统自动对订阅内容做以下处理：
 | Early Data | 首个数据包通过 sec-websocket-protocol 头传递，省 1 个 RTT |
 | 半开连接 | allowHalfOpen: true，一方关闭写入后另一方仍可读 |
 | 无 import 语句 | 避免 Cloudflare Snippets 环境的代码检测问题 |
-| TURN TCP 中继 | 完整 STUN/TURN 协议实现，支持 Allocate/CreatePermission/Connect/Bind |
+| TURN TCP 中继（Snippets） | 支持 Allocate/CreatePermission/Connect/ConnectionBind、401 长期凭证认证、MESSAGE-INTEGRITY、IPv4/IPv6 XOR 地址和事务 ID 校验 |
 
 ---
 
@@ -1033,9 +1166,10 @@ ECH 开启后，系统自动对订阅内容做以下处理：
 
 **Q: TURN 和 TURNS 区别？**
 
-- TURN：明文连接（端口一般 3478）
-- TURNS：TLS 加密连接（端口一般 5349）
-- 建议在安全性要求高的场景用 TURNS
+- TURN：两版均支持，使用普通 TCP 连接，常用端口为 3478
+- TURNS：在 TURN 控制连接和数据连接外建立 TLS，常用端口为 5349
+- 当前 Snippets 已实现真实 TURNS，省略端口时默认使用 5349
+- Worker 当前只有普通 TURN/TCP；其 `turns://` 路径不会建立真实 TLS，不应按 TURNS 使用
 
 **Q: 哪里获取 TURN 服务器？**
 
