@@ -8,7 +8,7 @@ let UUID = "06b65903-406d-4a41-8463-6fd5c0ee7798"; //修改可用的uuid
 const WEB_PASSWORD = "abc";  //修改你的登录密码
 const SUB_PASSWORD = "123456";  //修改你的订阅密码
 const SUB_TOKEN = "";  //ST裂变Token，留空不启用，支持环境变量 SUB_TOKEN 覆盖
-const DEFAULT_PROXY_IP = 'Pro'+'xy'+'IP.US.CM'+'Liu'+'ssss.net'; //单个proxyip socks5 http
+const DEFAULT_PROXY_IP = 'Pro'+'xy'+'IP.CM'+'Liu'+'ssss.net'; //单个反代地址
 const DEFAULT_SUB_DOMAIN = 'https://owo.o00o.ooo/'; //单个sub优选订阅
 const DEFAULT_CONVERTER = 'htt'+'ps://su'+'bap'+'i.cm'+'liu'+'ssss.net'; //转换后端api
 
@@ -1110,7 +1110,7 @@ async function connectViaTurnProxy(openSocket, cfg, targetHost, targetPort, fami
 }
 
 /* ---------- URL 路由解析：路径快捷方式 + 查询参数 ---------- */
-function pCfg(url, path) {
+function pCfg(url, path, fbPIP = null) {
   let pIP = null, s5 = null, enS = null, turn = null, gP = null, order = null;
 
   // 1a. TURN/TURNS：:// 为全局代理，= 为直连失败后回落
@@ -1237,6 +1237,13 @@ function pCfg(url, path) {
         order.push('s5', 'proxy');
       }
     }
+  }
+
+  // 路径与查询参数均未指定任何代理时，回落到内置兜底地址
+  if (!pIP && !s5 && !turn && !gP && fbPIP) {
+    const [a, p = 443] = parseAddressPort(fbPIP);
+    pIP = { address: a.includes('[') ? a.slice(1, -1) : a, port: +p };
+    if (!order.includes('proxy')) order.push('proxy');
   }
 
   return { pIP, s5, enS, turn, gP, order };
@@ -1403,7 +1410,7 @@ const b64uToU8 = (s) => {
 };
 
 /* ---------- WebSocket 入口 ---------- */
-const ws = async req => {
+const ws = async (req, env) => {
   // URL 编码修复（%3F 被转义进 path 的场景）
   const url = new URL(req.url);
   if (url.pathname.includes('%3F')) {
@@ -1417,7 +1424,10 @@ const ws = async req => {
   const path = url.pathname.slice(1);
 
   let routeCfg;
-  try { routeCfg = pCfg(url, path); }
+  let fbPIP = null;
+  try { fbPIP = await getSafeEnv(env, 'PROXYIP', DEFAULT_PROXY_IP); } catch (e) { fbPIP = DEFAULT_PROXY_IP; }
+  if (fbPIP) fbPIP = String(fbPIP).replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  try { routeCfg = pCfg(url, path, fbPIP); }
   catch { return new Response('Invalid proxy config', { status: 400 }); }
 
   const [client, server] = Object.values(new WebSocketPair());
@@ -2178,7 +2188,7 @@ export default {
       
 
       // 🟢 GrainTCP 代理入口
-      return ws(r);
+      return ws(r, env);
 
   } catch (err) {
       return new Response('Internal Server Error', { status: 500 });
