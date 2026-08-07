@@ -480,6 +480,12 @@ TLS: 开启
 - Workers 版：环境变量 `PROXYIP` 填入地址
 - Snippets 版：修改顶部 `PIP` 的值；生成订阅时会把它写入 `/proxyip=...` 路径
 
+配置的默认值同时作为**连接层兜底**：当客户端路径为纯 `/`、且未通过任何方式指定代理时，自动使用该地址作为 ProxyIP 出口，并在回落顺序中补入 `proxy` 步骤。这样即使节点链接不携带 `/proxyip=...`，也能正常访问需要中转的站点。
+
+兜底只在路径与查询参数**完全没有**指定代理时生效。已显式配置 ProxyIP、SOCKS5、HTTP/HTTPS 或 TURN 的路径一律按原样执行，不会被兜底值覆盖。
+
+Workers 版兜底值的读取优先级为 **环境变量 > D1 数据库 > 代码内置常量**，与订阅生成器使用的值保持一致。Snippets 版没有环境变量，直接读取顶部 `PIP` 常量。
+
 **方式二：在客户端路径中指定**
 
 ```text
@@ -718,6 +724,8 @@ path=%2Fturn%3A%2F%2Fadmin%3Apassword%40relay.example.com%3A3478
 ### 连接回落顺序
 
 全局 `://` 路径只走指定代理。没有命中全局代理时，两版默认都从 Direct 开始；Snippets 的普通顺序为 `direct → s5 → proxy`，其中 `s5` 可承载 SOCKS5、HTTP 或 HTTPS CONNECT。Worker 的 `s5` 只承载 SOCKS5/HTTP，并额外支持 TURN/TURNS 回落。
+
+路径为纯 `/`（未指定任何代理）时，两版都会把配置中的默认 ProxyIP 作为兜底出口注入，实际顺序为 `direct → proxy`。
 
 | 方式 | Worker | Snippets |
 |------|--------|----------|
@@ -1149,6 +1157,19 @@ ECH 开启后，系统自动对订阅内容做以下处理：
 1. 尝试添加 ProxyIP：路径改为 `/proxyip=你的ProxyIP地址:443`
 2. 或在后台/配置中设置 ProxyIP
 3. 后台有 ProxyIP 检测按钮，可验证 ProxyIP 是否可用
+
+配置了默认 ProxyIP 后，即使路径为纯 `/` 也会自动使用该地址作为兜底出口，无需在每个节点链接里手动写 `/proxyip=...`。
+
+**Q: 用第三方订阅面板生成的节点连不上？**
+
+部分第三方面板（如 EDT）勾选「启用自动获取」ProxyIP 后，生成的节点链接路径是纯 `/`，不携带 `/proxyip=...` 参数。
+
+本项目已支持这种情况：路径为空时自动回落到配置中的默认 ProxyIP。只需确认已正确配置：
+
+- Workers 版：环境变量 `PROXYIP` 已填写（或后台已保存到 D1）
+- Snippets 版：顶部 `PIP` 已填写
+
+如果仍连不上，检查这个地址本身是否可用（后台 ProxyIP 检测按钮），以及客户端的 UUID、传输方式（WebSocket + TLS）、端口（443）是否与服务端一致。
 
 **Q: 速度慢？**
 
